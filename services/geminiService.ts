@@ -1,228 +1,173 @@
-// geminiService.ts - 프로덕션용 (강력한 응답 파싱)
 
-interface GeminiMessage {
-  role: string;
-  parts: { text: string }[];
-}
+import { GoogleGenAI } from "@google/genai";
+import { type AppData, type NewsSummary } from '../types';
 
-interface GeminiRequestBody {
-  messages: GeminiMessage[];
-  tools?: any[];
-}
-
-// API 엔드포인트 결정
-const getApiEndpoint = () => {
-  return import.meta.env.DEV 
-    ? 'http://localhost:5173/api/gemini'
-    : '/api/gemini';
+/**
+ * Generates a consistent hash code from a string.
+ * Used to generate the same image seed for the same news title (Browser Caching).
+ */
+const hashCode = (str: string): number => {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        const char = str.charCodeAt(i);
+        hash = (hash << 5) - hash + char;
+        hash |= 0; // Convert to 32bit integer
+    }
+    return Math.abs(hash);
 };
 
-// 응답에서 텍스트 추출 (여러 형식 지원)
-function extractTextFromResponse(data: any): string {
-  // 케이스 1: candidates 배열이 있는 경우
-  if (data.candidates && Array.isArray(data.candidates)) {
-    for (const candidate of data.candidates) {
-      // content.parts 구조
-      if (candidate.content?.parts && Array.isArray(candidate.content.parts)) {
-        for (const part of candidate.content.parts) {
-          if (part.text) {
-            return part.text;
-          }
-        }
-      }
-      
-      // 직접 text 필드가 있는 경우
-      if (candidate.text) {
-        return candidate.text;
-      }
-    }
-  }
-  
-  // 케이스 2: 직접 text 필드
-  if (data.text) {
-    return data.text;
-  }
-  
-  // 케이스 3: content.text 구조
-  if (data.content?.text) {
-    return data.content.text;
-  }
-  
-  return '';
-}
+/**
+ * Sanitize user input to prevent basic Prompt Injection attacks.
+ * Removes potential control characters and limits length.
+ */
+const sanitizeInput = (input: string): string => {
+    // 1. Remove control characters that might interfere with JSON or Prompt structure
+    let sanitized = input.replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
 
-// JSON 추출 (마크다운 코드 블록에서)
-function extractJSON(text: string): any {
-  // ```json ... ``` 형식
-  const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-  if (jsonMatch) {
-    try {
-      return JSON.parse(jsonMatch[1]);
-    } catch (e) {
-      console.error('JSON parse error from markdown:', e);
-    }
-  }
-  
-  // ``` ... ``` 형식 (json 키워드 없음)
-  const codeMatch = text.match(/```\s*([\s\S]*?)\s*```/);
-  if (codeMatch) {
-    try {
-      return JSON.parse(codeMatch[1]);
-    } catch (e) {
-      console.error('JSON parse error from code block:', e);
-    }
-  }
-  
-  // 직접 JSON 파싱 시도
-  try {
-    return JSON.parse(text);
-  } catch (e) {
-    // JSON이 아닌 경우 - 텍스트 그대로 반환
-    console.warn('Response is not JSON, returning as text');
-    return null;
-  }
-}
+    // 2. Escape backticks and braces which are often used in prompt manipulation
+    sanitized = sanitized.replace(/`/g, "'").replace(/\{/g, "(").replace(/\}/g, ")");
 
-// 메인 함수: 뉴스 검색 및 요약
-export async function fetchNewsSummary(keyword: string): Promise<any> {
-  try {
+    // 3. Limit length to reasonable size for a search query
+    return sanitized.slice(0, 100);
+};
+
+export const fetchNewsSummary = async (query: string): Promise<AppData> => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const today = new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' });
+
+    // Security: Sanitize user input before sending to AI
+    const cleanQuery = sanitizeInput(query);
+
+    // Improved Prompt Strategy for "Gemini 2.5 Flash":
+    // 1. Simplicity: Ask for simple English keywords for images, not complex sentences.
+    // 2. Fallback: Ensure links are real.
     const prompt = `
-당신은 전문 뉴스 브리핑 AI입니다. "${keyword}"에 대한 최신 뉴스를 검색하여 정리해주세요.
+    You are a professional news curator.
+    Date: ${today}
+    Query: "${cleanQuery}"
 
-[검색 조건]
-- 신뢰할 수 있는 한국 언론사 (조선일보, 중앙일보, 한겨레, 경향신문, MBC, KBS, SBS, 연합뉴스, YTN, JTBC 등)
-- 최근 24시간 이내의 기사 우선
-- 광고성 콘텐츠 제외
-- 3-5개의 뉴스
+    **TASK**:
+    1. Search via 'googleSearch' for the top 3-5 distinct, authoritative news.
+    2. Output JSON.
 
-[중요: 반드시 아래 JSON 형식만 출력하세요]
-\`\`\`json
-{
-  "news": [
+    **FIELDS**:
+    - **summary**: 3-5 sentences. Detailed context. Korean.
+    - **imageKeywords**:
+      - 3-5 concrete English nouns/adjectives describing the scene.
+      - NO text, NO graphs, NO abstract concepts.
+      - Example: "Blue house, president, press conference, suits" (O)
+      - Example: "Economic downfall concept" (X) -> "Red stock arrow, worried trader, monitor" (O)
+    - **relatedArticles**:
+      - STRICTLY REAL URLs from the search tool.
+      - At least 1 valid link per item.
+
+    **JSON Output:**
     {
-      "title": "뉴스 제목",
-      "summary": "3-5줄로 핵심 내용 요약. 문장은 명확하게 끝나야 합니다.",
-      "source": "언론사명",
-      "url": "https://실제존재하는기사링크.com",
-      "timestamp": "YYYY-MM-DD HH:MM"
+      "summaries": [
+        {
+          "title": "Headline",
+          "summary": "Content...",
+          "imageKeywords": "visually descriptive english keywords",
+          "relatedArticles": [ { "headline": "Title", "url": "http..." } ]
+        }
+      ],
+      "recommendations": ["Topic1", "Topic2"]
     }
-  ]
-}
-\`\`\`
+    `;
 
-[필수 규칙]
-1. JSON 형식만 출력 (다른 텍스트 절대 금지)
-2. 실제 존재하는 기사 URL만 포함
-3. summary는 반드시 한국어 문장으로 끝나야 함 (예: "~입니다.", "~했습니다.")
-4. 최소 3개, 최대 5개의 뉴스
-`;
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                tools: [{ googleSearch: {} }],
+            },
+        });
 
-    const messages: GeminiMessage[] = [{
-      role: 'user',
-      parts: [{ text: prompt }]
-    }];
+        const text = response.text || "{}";
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        const jsonStr = jsonMatch ? jsonMatch[0] : "{}";
 
-    const requestBody: GeminiRequestBody = {
-      messages,
-      tools: [{
-        googleSearch: {}
-      }]
-    };
+        let rawData;
+        try {
+            rawData = JSON.parse(jsonStr);
+        } catch (parseError) {
+            console.error("JSON Parse Error:", parseError);
+            throw new Error("데이터 형식이 올바르지 않습니다. 다시 시도해주세요.");
+        }
 
-    const apiEndpoint = getApiEndpoint();
-    
-    console.log('Calling Gemini API...');
-    
-    const response = await fetch(apiEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(requestBody)
-    });
+        if (!rawData.summaries || !Array.isArray(rawData.summaries)) {
+             throw new Error("관련된 최신 뉴스를 찾을 수 없습니다.");
+        }
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || `API 요청 실패 (${response.status})`);
+        const summaries: NewsSummary[] = rawData.summaries.map((item: any) => {
+            // 1. Image Generation Logic
+            const seedStr = (item.title || "") + (item.summary ? item.summary.slice(0, 10) : "");
+            const seed = hashCode(seedStr);
+
+            // Construct a robust prompt: User keywords + Style boosters
+            // We force "news photography" style.
+            let keywords = item.imageKeywords;
+            if (!keywords || keywords.length < 3) {
+                // Fallback if AI didn't give good keywords
+                keywords = "breaking news, journalism, detailed, realistic";
+            }
+
+            const finalImagePrompt = `${keywords}, news photography, realistic, 4k, cinematic lighting`;
+            const encodedPrompt = encodeURIComponent(finalImagePrompt);
+
+            // Use 'flux' model for best results.
+            const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=768&height=512&model=flux&nologo=true&seed=${seed}`;
+
+            // 2. Link Logic
+            const rawLinks = Array.isArray(item.relatedArticles) ? item.relatedArticles : [];
+            const badDomains = ['namu.wiki', 'youtube.com', 'dcinside.com', 'fmkorea.com', 'facebook.com', 'twitter.com', 'instagram.com', 'wikipedia.org'];
+
+            const safeLinks = rawLinks.filter((article: any) => {
+                if (!article.url || !article.url.startsWith('http')) return false;
+                if (article.url.endsWith('...')) return false;
+                if (badDomains.some(d => article.url.includes(d))) return false;
+                return true;
+            });
+
+            // Whitelist for prioritization (Security: Trusted Sources)
+            const trustedDomains = [
+                'naver.com', 'daum.net', 'kakao.com', 'yna.co.kr', 'chosun.com', 'joongang.co.kr', 'donga.com',
+                'hani.co.kr', 'khan.co.kr', 'mk.co.kr', 'hankyung.com', 'mt.co.kr', 'fnnews.com', 'etnews.com',
+                'zdnet.co.kr', 'kbs.co.kr', 'imbc.com', 'sbs.co.kr', 'jtbc.co.kr', 'ytn.co.kr', 'yonhapnewstv.co.kr',
+                'news1.kr', 'newsis.com', 'nocutnews.co.kr', 'seoul.co.kr', 'segye.com', 'kmib.co.kr',
+                'cnn.com', 'bbc.com', 'reuters.com', 'bloomberg.com', 'apnews.com', 'nytimes.com', 'wsj.com'
+            ];
+
+            let finalLinks = safeLinks.filter((article: any) =>
+                trustedDomains.some(domain => article.url.includes(domain))
+            );
+
+            // Ensure at least 1 link if possible (Fallback to non-blacklisted safe links)
+            if (finalLinks.length === 0 && safeLinks.length > 0) {
+                finalLinks = [safeLinks[0]];
+            }
+
+            const links = finalLinks.slice(0, 2).map((article: any) => ({
+                title: article.headline || article.title || "관련 기사 보기",
+                url: article.url
+            }));
+
+            return {
+                title: item.title,
+                summary: item.summary,
+                imageUrl: imageUrl,
+                links: links
+            };
+        });
+
+        return {
+            summaries: summaries,
+            recommendations: rawData.recommendations || []
+        };
+
+    } catch (e) {
+        console.error("Gemini API Error:", e);
+        throw new Error("뉴스 정보를 가져오는데 실패했습니다.");
     }
-
-    const data = await response.json();
-    console.log('Gemini API response received');
-
-    // Debug logging (only in development)
-    if (import.meta.env.DEV) {
-      console.log('Response data:', JSON.stringify(data, null, 2));
-    }
-
-    // MAX_TOKENS 에러 체크
-    if (data.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
-      throw new Error('응답이 너무 길어서 중단되었습니다. 더 구체적인 키워드로 검색해주세요.');
-    }
-
-    // 응답에서 텍스트 추출
-    const responseText = extractTextFromResponse(data);
-
-    if (!responseText) {
-      console.error('Failed to extract text from response');
-      throw new Error('응답에서 텍스트를 찾을 수 없습니다. 다시 시도해주세요.');
-    }
-    
-    console.log('Extracted text length:', responseText.length);
-    
-    // JSON 추출 및 파싱
-    const jsonData = extractJSON(responseText);
-    
-    if (!jsonData) {
-      console.error('Failed to parse JSON from response:', responseText.substring(0, 500));
-      throw new Error('JSON 형식이 올바르지 않습니다. AI가 텍스트만 반환했습니다.');
-    }
-    
-    // 뉴스 배열 확인
-    if (!jsonData.news || !Array.isArray(jsonData.news)) {
-      console.error('Invalid JSON structure:', jsonData);
-      throw new Error('뉴스 데이터 구조가 올바르지 않습니다');
-    }
-    
-    if (jsonData.news.length === 0) {
-      throw new Error('검색된 뉴스가 없습니다. 다른 키워드로 시도해주세요.');
-    }
-
-    console.log(`Successfully parsed ${jsonData.news.length} news items`);
-
-    // Transform Gemini response to AppData format
-    const summaries = jsonData.news.map((newsItem: any) => ({
-      title: newsItem.title,
-      summary: newsItem.summary,
-      imageUrl: `https://images.unsplash.com/photo-1504711434969-e33886168f5c?q=80&w=768&auto=format&fit=crop&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D`,
-      links: newsItem.url ? [{
-        title: newsItem.source || '원문 기사',
-        url: newsItem.url
-      }] : []
-    }));
-
-    return {
-      summaries,
-      recommendations: []
-    };
-
-  } catch (error: any) {
-    console.error('Gemini Service Error:', error);
-    
-    // 사용자 친화적 에러 메시지
-    if (error.message.includes('JSON')) {
-      throw new Error('AI 응답 형식 오류입니다. 잠시 후 다시 시도해주세요.');
-    }
-    
-    throw new Error(error.message || '뉴스 검색 중 오류가 발생했습니다');
-  }
-}
-
-// 클래스 기반 (기존 코드 호환성 유지)
-export class GeminiService {
-  async searchAndSummarizeNews(keyword: string): Promise<any> {
-    return fetchNewsSummary(keyword);
-  }
-}
-
-// 싱글톤 인스턴스
-export const geminiService = new GeminiService();
+};
