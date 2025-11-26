@@ -105,9 +105,9 @@ const App: React.FC = () => {
   }, [speak, appData?.summaries, isSoundOn, playbackSpeed]);
 
   const startAutoPlay = useCallback(() => {
-    if (!appData || !appData.summaries.length || !isSoundOn) return;
+    if (!appData || !appData.summaries?.length || !isSoundOn) return;
     if (isSpeaking) cancel();
-    
+
     autoPlayQueue.current = [...appData.summaries];
     isAutoPlayingRef.current = true;
     setIsAutoPlaying(true);
@@ -132,7 +132,7 @@ const App: React.FC = () => {
 
   // Autoplay effect when data loads
   useEffect(() => {
-    if (appData && appData.summaries.length > 0 && isSoundOn) {
+    if (appData && appData.summaries?.length > 0 && isSoundOn) {
         // Short delay to ensure UI renders before speaking
         const timer = setTimeout(() => {
             startAutoPlay();
@@ -257,7 +257,7 @@ const App: React.FC = () => {
           setSearchQuery={setSearchQuery}
         />
 
-        {appData && appData.recommendations.length > 0 && !isLoading && (
+        {appData && appData.recommendations?.length > 0 && !isLoading && (
             <div className="mt-6 max-w-2xl mx-auto opacity-0 animate-fadeIn" style={{ animationDelay: `150ms` }}>
                 <Recommendations
                     topics={appData.recommendations}
@@ -269,8 +269,8 @@ const App: React.FC = () => {
         <div ref={resultsRef} className="mt-8">
           {isLoading && <LoadingSpinner />}
           {error && <p className="text-center text-red-500 bg-red-100 dark:bg-red-900/50 p-4 rounded-lg animate-pulse">{error}</p>}
-          {appData && (
-            <ResultsDisplay 
+          {appData && appData.summaries?.length > 0 && (
+            <ResultsDisplay
               summaries={appData.summaries}
               onTogglePlay={handleTogglePlay}
               currentlyPlayingTitle={currentlyPlayingTitle}
