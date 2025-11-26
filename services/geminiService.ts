@@ -148,7 +148,11 @@ export async function fetchNewsSummary(keyword: string): Promise<any> {
 
     const data = await response.json();
     console.log('Gemini API response received');
-    console.log('Response data:', JSON.stringify(data, null, 2));
+
+    // Debug logging (only in development)
+    if (import.meta.env.DEV) {
+      console.log('Response data:', JSON.stringify(data, null, 2));
+    }
 
     // MAX_TOKENS 에러 체크
     if (data.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
@@ -182,9 +186,24 @@ export async function fetchNewsSummary(keyword: string): Promise<any> {
     if (jsonData.news.length === 0) {
       throw new Error('검색된 뉴스가 없습니다. 다른 키워드로 시도해주세요.');
     }
-    
+
     console.log(`Successfully parsed ${jsonData.news.length} news items`);
-    return jsonData;
+
+    // Transform Gemini response to AppData format
+    const summaries = jsonData.news.map((newsItem: any) => ({
+      title: newsItem.title,
+      summary: newsItem.summary,
+      imageUrl: `https://images.unsplash.com/photo-1504711434969-e33886168f5c?q=80&w=768&auto=format&fit=crop&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D`,
+      links: newsItem.url ? [{
+        title: newsItem.source || '원문 기사',
+        url: newsItem.url
+      }] : []
+    }));
+
+    return {
+      summaries,
+      recommendations: []
+    };
 
   } catch (error: any) {
     console.error('Gemini Service Error:', error);
