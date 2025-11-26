@@ -148,13 +148,19 @@ export async function fetchNewsSummary(keyword: string): Promise<any> {
 
     const data = await response.json();
     console.log('Gemini API response received');
-    
+    console.log('Response data:', JSON.stringify(data, null, 2));
+
+    // MAX_TOKENS 에러 체크
+    if (data.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
+      throw new Error('응답이 너무 길어서 중단되었습니다. 더 구체적인 키워드로 검색해주세요.');
+    }
+
     // 응답에서 텍스트 추출
     const responseText = extractTextFromResponse(data);
-    
+
     if (!responseText) {
-      console.error('Response data:', JSON.stringify(data, null, 2));
-      throw new Error('응답에서 텍스트를 찾을 수 없습니다');
+      console.error('Failed to extract text from response');
+      throw new Error('응답에서 텍스트를 찾을 수 없습니다. 다시 시도해주세요.');
     }
     
     console.log('Extracted text length:', responseText.length);
