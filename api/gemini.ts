@@ -45,7 +45,7 @@ export default async function handler(
 
     // Gemini API 호출 (2.5 Flash 최신 버전)
     const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-latest:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: {
@@ -91,3 +91,4 @@ export default async function handler(
     });
   }
 }
+
