@@ -41,9 +41,9 @@ export default async function handler(
       });
     }
 
-    console.log('Calling Gemini API with model: gemini-2.5-flash-latest');
+    console.log('Calling Gemini API with model: gemini-2.5-flash');
 
-    // Gemini API 호출 (2.5 Flash 최신 버전)
+    // Gemini API 호출 (2.5 Flash - 확인된 모델명)
     const geminiResponse = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
       {
@@ -91,4 +91,3 @@ export default async function handler(
     });
   }
 }
-
