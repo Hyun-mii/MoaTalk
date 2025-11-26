@@ -21,12 +21,31 @@ export default async function handler(
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  // API 키 확인
+  const apiKey = process.env.GEMINI_API_KEY;
+  
+  if (!apiKey) {
+    console.error('GEMINI_API_KEY is not set');
+    return res.status(500).json({ 
+      error: 'Server configuration error: API key not found',
+      details: 'Please check environment variables in Vercel dashboard'
+    });
+  }
+
   try {
     const { messages, tools } = req.body;
 
-    // Gemini API 호출 (안정 버전 모델 사용)
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ 
+        error: 'Invalid request: messages array is required' 
+      });
+    }
+
+    console.log('Calling Gemini API with model: gemini-2.5-flash-latest');
+
+    // Gemini API 호출 (2.5 Flash 최신 버전)
+    const geminiResponse = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-latest:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: {
@@ -47,19 +66,28 @@ export default async function handler(
       }
     );
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error?.message || 'Gemini API request failed');
+    if (!geminiResponse.ok) {
+      const errorData = await geminiResponse.json();
+      console.error('Gemini API Error:', errorData);
+      
+      return res.status(geminiResponse.status).json({ 
+        error: errorData.error?.message || 'Gemini API request failed',
+        status: geminiResponse.status,
+        details: errorData
+      });
     }
 
-    const data = await response.json();
+    const data = await geminiResponse.json();
+    console.log('Gemini API response received successfully');
     
     return res.status(200).json(data);
     
   } catch (error: any) {
-    console.error('Gemini API Error:', error);
+    console.error('Server Error:', error);
     return res.status(500).json({ 
-      error: error.message || 'Internal server error' 
+      error: 'Internal server error',
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 }
